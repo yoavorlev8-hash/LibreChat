@@ -1,0 +1,68 @@
+# Base44 development compose for LibreChat.
+# Runs the app from the cloned source (not a prebuilt image): a one-shot setup
+# service installs deps and builds the shared TS packages, then a single `app`
+# container runs the Express backend (nodemon) and the Vite dev server together
+# so Vite's /api proxy reaches the backend on the same host. The Vite port
+# (3090) is published on host port 3000.
+services:
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  setup:
+    image: node:24-alpine
+    working_dir: /app
+    env_file: /run/base44/app.env
+    environment:
+      - NODE_ENV=development
+    volumes:
+      - ./:/app
+      - app_node_modules:/app/node_modules
+    command: sh -c "npm ci --no-audit && npm run build:packages && mkdir -p client/dist && printf '<!doctype html><html lang=\"en-US\"><head><base href=\"/\"/></head><body><div id=\"root\"></div></body></html>' > client/dist/index.html"
+
+  app:
+    image: node:24-alpine
+    working_dir: /app
+    env_file: /run/base44/app.env
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      setup:
+        condition: service_completed_successfully
+    environment:
+      - NODE_ENV=development
+      - HOST=0.0.0.0
+      - MONGO_URI=mongodb://mongodb:27017/LibreChat
+      # Fresh internal secrets (generated; not external-service credentials).
+      - CREDS_KEY=ff22adfaecaf5b14f6ab75b57826ab67fe9abd6fe2bef06e50f5707d05fb8df8
+      - CREDS_IV=03469f11266ff77677e19a1ced5bf795
+      - JWT_SECRET=5a3f7f8de5fafccf817e4ed28beb25793ed67f03fa6fd224eb8e739092ed9a39
+      - JWT_REFRESH_SECRET=e483f294f867cff914f33a19d35556bc5c61afb1b98c8c3565ca996200261eb1
+      # Single origin: the API is served through Vite's /api proxy on port 3000.
+      - DOMAIN_CLIENT=https://3000-${BASE44_PUBLIC_HOST_SUFFIX}
+      - DOMAIN_SERVER=https://3000-${BASE44_PUBLIC_HOST_SUFFIX}
+      - VITE_ALLOWED_HOSTS=3000-${BASE44_PUBLIC_HOST_SUFFIX}
+      - DEBUG_LOGGING=true
+      - ALLOW_REGISTRATION=true
+    volumes:
+      - ./:/app
+      - app_node_modules:/app/node_modules
+      - app_logs:/app/logs
+      - app_uploads:/app/uploads
+    command: sh scripts/base44-dev.sh
+    ports:
+      - "3000:3090"
+    restart: unless-stopped
+
+volumes:
+  mongo_data:
+  app_node_modules:
+  app_logs:
+  app_uploads:
